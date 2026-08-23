@@ -45,9 +45,14 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // MongoDB Connection
 mongoose.connect(process.env.MONGODB_URI)
-  .then(() => console.log('✅ MongoDB Connected Successfully'))
-  .catch((err) => console.error('❌ MongoDB Connection Error:', err));
-
+  .then(() => {
+      console.log("MongoDB connected");
+      console.log("Mongo host:", mongoose.connection.host);
+      console.log("Mongo database:", mongoose.connection.name);
+  })
+  .catch((err) => {
+      console.error("MongoDB connection failed:", err);
+  });
 // === Existing Cold Storage Routes ===
 app.use('/api/auth', authRoutes);
 app.use('/api/customers', customerRoutes);
@@ -91,7 +96,7 @@ app.use((err, req, res, next) => {
 });
 
 // Start server
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 MediCare Server running on port ${PORT}`);
   console.log(`📊 API Health: http://localhost:${PORT}/api/health`);
 });

@@ -1,161 +1,244 @@
+import 'dotenv/config';
+
 import express from 'express';
+import crypto from 'crypto';
+import Razorpay from 'razorpay';
+
 import { protect } from '../middleware/auth.js';
+import Appointment from '../models/Appointment.js';
 
 const router = express.Router();
 
-import Appointment from '../models/Appointment.js';
-import LabTest from '../models/LabTest.js';
-import Doctor from '../models/Doctor.js';
-import Patient from '../models/Patient.js';
-
-// @route   POST /api/payments/create-intent
-router.post('/create-intent', protect, async (req, res) => {
-    try {
-        const { amount, currency, referenceId, description, type } = req.body;
-
-        // Mock payment intent (Replace with real Stripe/Razorpay in production)
-        const paymentIntent = {
-            id: `pay_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-            amount: amount,
-            currency: currency || 'INR',
-            status: 'created',
-            referenceId,
-            type,
-            description: description || 'Medical fee',
-            createdAt: new Date()
-        };
-
-        res.json({ success: true, data: paymentIntent });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
-    }
+const razorpay = new Razorpay({
+    key_id: process.env.RAZORPAY_KEY_ID,
+    key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
-// @route   POST /api/payments/verify
-router.post('/verify', protect, async (req, res) => {
-    try {
-        const { paymentId, referenceId, type, status } = req.body;
 
-        if (type === 'appointment') {
-            await Appointment.findByIdAndUpdate(referenceId, {
-                'payment.status': status === 'completed' ? 'paid' : 'pending',
-                'payment.transactionId': paymentId
-            });
-        } else if (type === 'labtest') {
-            await LabTest.findByIdAndUpdate(referenceId, {
-                paymentStatus: status === 'completed' ? 'paid' : 'pending'
+// ======================================================
+// CREATE RAZORPAY ORDER
+// POST /api/payments/create-order
+// ======================================================
+
+router.post('/create-order', protect, async (req, res) => {
+    try {
+
+        const { appointmentId } = req.body;
+
+        if (!appointmentId) {
+            return res.status(400).json({
+                success: false,
+                message: 'Appointment ID is required'
             });
         }
 
-        res.json({
+        const appointment =
+            await Appointment.findById(appointmentId);
+
+        if (!appointment) {
+            return res.status(404).json({
+                success: false,
+                message: 'Appointment not found'
+            });
+        }
+
+        const amount =
+            Number(appointment.payment?.amount || 0);
+
+        if (amount <= 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid appointment amount'
+            });
+        }
+
+        // Razorpay uses paise
+        const amountInPaise =
+            Math.round(amount * 100);
+
+        const order =
+            await razorpay.orders.create({
+                amount: amountInPaise,
+                currency: 'INR',
+                receipt: `apt_${appointment._id}`
+            });
+
+        // Save Razorpay order ID
+        appointment.payment.razorpayOrderId =
+            order.id;
+
+        await appointment.save();
+
+        console.log(
+            'Razorpay order created:',
+            order.id
+        );
+
+        return res.json({
             success: true,
             data: {
-                paymentId,
-                status: status || 'paid',
-                verifiedAt: new Date(),
-                receipt: `RCP-${Date.now()}`
-            },
-            message: 'Payment verified successfully'
+                orderId: order.id,
+                amount: order.amount,
+                currency: order.currency,
+                keyId:
+                    process.env.RAZORPAY_KEY_ID,
+                appointmentId:
+                    appointment._id
+            }
         });
+
     } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
+
+        console.error(
+            'RAZORPAY CREATE ORDER ERROR:',
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            message:
+                error.error?.description ||
+                error.message ||
+                'Failed to create Razorpay order'
+        });
     }
 });
 
-// @route   GET /api/payments/history
-router.get('/history', protect, async (req, res) => {
+
+// ======================================================
+// VERIFY RAZORPAY PAYMENT
+// POST /api/payments/verify
+// ======================================================
+
+router.post('/verify', protect, async (req, res) => {
     try {
-        const history = [];
 
-        if (req.user.role === 'patient') {
-            const pat = await Patient.findOne({ userId: req.user._id });
-            if (!pat) return res.json({ success: true, data: [] });
+        const {
+            appointmentId,
+            razorpay_order_id,
+            razorpay_payment_id,
+            razorpay_signature
+        } = req.body;
 
-            // Get Appointments
-            const appointments = await Appointment.find({ patientId: pat._id })
-                .populate({ path: 'doctorId', populate: { path: 'userId' } });
-
-            appointments.forEach(a => {
-                history.push({
-                    _id: a._id.toString(),
-                    id: `pay_${a._id}`,
-                    appointmentId: a._id,
-                    type: 'appointment',
-                    description: `Consultation with Dr. ${a.doctorId?.userId?.name || 'Unknown'}`,
-                    amount: a.payment?.amount || 500,
-                    status: a.payment?.status === 'paid' ? 'completed' : 'pending',
-                    date: a.dateTime,
-                    receipt: a.payment?.status === 'paid' ? `RCP-${a._id.toString().slice(-6)}` : null
-                });
-            });
-
-            // Get Lab Tests
-            const tests = await LabTest.find({ patientId: pat._id });
-            tests.forEach(t => {
-                history.push({
-                    _id: t._id.toString(),
-                    id: `pay_${t._id}`,
-                    appointmentId: t._id,
-                    type: 'labtest',
-                    description: `${t.testName || t.testType} - ${t.labName || 'Lab'}`,
-                    amount: t.cost || 0,
-                    status: t.paymentStatus === 'paid' ? 'completed' : 'pending',
-                    date: t.scheduledDate,
-                    receipt: t.paymentStatus === 'paid' ? `RCP-${t._id.toString().slice(-6)}` : null
-                });
-            });
-        } else if (req.user.role === 'doctor') {
-            const doc = await Doctor.findOne({ userId: req.user._id });
-            if (!doc) return res.json({ success: true, data: [] });
-
-            const appointments = await Appointment.find({ doctorId: doc._id })
-                .populate({ path: 'patientId', populate: { path: 'userId' } });
-
-            appointments.forEach(a => {
-                history.push({
-                    _id: a._id.toString(),
-                    id: `pay_${a._id}`,
-                    appointmentId: a._id,
-                    type: 'appointment',
-                    description: `Consultation from ${a.patientId?.userId?.name || 'Patient'}`,
-                    amount: a.payment?.amount || 500,
-                    status: a.payment?.status === 'paid' ? 'completed' : 'pending',
-                    date: a.dateTime,
-                    receipt: a.payment?.status === 'paid' ? `RCP-${a._id.toString().slice(-6)}` : null
-                });
+        if (
+            !appointmentId ||
+            !razorpay_order_id ||
+            !razorpay_payment_id ||
+            !razorpay_signature
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: 'Missing payment details'
             });
         }
 
-        // Sort by date descending
-        history.sort((a, b) => new Date(b.date) - new Date(a.date));
+        const appointment =
+            await Appointment.findById(
+                appointmentId
+            );
 
-        res.json({ success: true, data: history });
+        if (!appointment) {
+            return res.status(404).json({
+                success: false,
+                message: 'Appointment not found'
+            });
+        }
+
+        // Make sure this order belongs to this appointment
+        if (
+            appointment.payment?.razorpayOrderId &&
+            appointment.payment.razorpayOrderId !==
+            razorpay_order_id
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid Razorpay order'
+            });
+        }
+
+        // Generate expected signature
+        const body =
+            razorpay_order_id +
+            '|' +
+            razorpay_payment_id;
+
+        const expectedSignature =
+            crypto
+                .createHmac(
+                    'sha256',
+                    process.env.RAZORPAY_KEY_SECRET
+                )
+                .update(body)
+                .digest('hex');
+
+        // Verify signature
+        if (
+            expectedSignature !==
+            razorpay_signature
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid payment signature'
+            });
+        }
+
+        // Payment successful
+        appointment.payment.status =
+            'paid';
+
+        appointment.payment.transactionId =
+            razorpay_payment_id;
+
+        appointment.payment.method =
+            'razorpay';
+
+        appointment.payment.razorpayOrderId =
+            razorpay_order_id;
+
+        appointment.payment.razorpayPaymentId =
+            razorpay_payment_id;
+
+        appointment.payment.razorpaySignature =
+            razorpay_signature;
+
+        appointment.status =
+            'confirmed';
+
+        await appointment.save();
+
+        console.log(
+            'Payment verified:',
+            razorpay_payment_id
+        );
+
+        return res.json({
+            success: true,
+            message:
+                'Payment verified successfully',
+            data: {
+                paymentId:
+                    razorpay_payment_id,
+                orderId:
+                    razorpay_order_id,
+                status: 'paid'
+            }
+        });
+
     } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
+
+        console.error(
+            'RAZORPAY VERIFY ERROR:',
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            message:
+                error.message ||
+                'Payment verification failed'
+        });
     }
 });
 
-// @route   GET /api/payments/:id/invoice
-router.get('/:id/invoice', protect, async (req, res) => {
-    try {
-        const invoice = {
-            invoiceNumber: `INV-MC-${Date.now()}`,
-            paymentId: req.params.id,
-            patientName: req.user.name,
-            date: new Date(),
-            items: [
-                { description: 'Medical Consultation', amount: 500 },
-                { description: 'Platform Fee', amount: 25 },
-                { description: 'GST (18%)', amount: 94.5 }
-            ],
-            total: 619.5,
-            status: 'paid'
-        };
-
-        res.json({ success: true, data: invoice });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
-    }
-});
 
 export default router;

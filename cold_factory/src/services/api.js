@@ -1,6 +1,7 @@
 import axios from 'axios';
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
 
-const API_BASE_URL = 'http://localhost:5000/api';
 
 const api = axios.create({
     baseURL: API_BASE_URL,
@@ -104,15 +105,31 @@ export const doctorAPI = {
 };
 
 // Appointment API
+// Appointment API
 export const appointmentAPI = {
-    getAll: () => api.get('/appointments'),
-    getById: (id) => api.get(`/appointments/${id}`),
-    create: (data) => api.post('/appointments', data),
-    update: (id, data) => api.put(`/appointments/${id}`, data),
-    cancel: (id) => api.put(`/appointments/${id}/cancel`),
-    getSlots: (doctorId, date) => api.get(`/appointments/slots/${doctorId}?date=${date}`),
-};
+    getAll: () =>
+        api.get('/appointments'),
 
+    getById: (id) =>
+        api.get(`/appointments/${id}`),
+
+    create: (data) =>
+        api.post('/appointments', data),
+
+    update: (id, data) =>
+        api.put(`/appointments/${id}`, data),
+
+    cancel: (id) =>
+        api.put(`/appointments/${id}/cancel`),
+
+    getSlots: (doctorId, date) =>
+        api.get('/appointments/available-slots', {
+            params: {
+                doctorId,
+                date
+            }
+        })
+};
 // Upload API
 export const uploadAPI = {
     upload: (formData) => api.post('/uploads', formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
@@ -169,10 +186,18 @@ export const alertAPI = {
 
 // Payment API
 export const paymentAPI = {
-    createIntent: (data) => api.post('/payments/create-intent', data),
-    verify: (data) => api.post('/payments/verify', data),
-    getHistory: () => api.get('/payments/history'),
-    getInvoice: (id) => api.get(`/payments/invoice/${id}`),
+
+    createOrder: (data) =>
+        api.post('/payments/create-order', data),
+
+    verify: (data) =>
+        api.post('/payments/verify', data),
+
+    getHistory: () =>
+        api.get('/payments/history'),
+
+    getInvoice: (id) =>
+        api.get(`/payments/${id}/invoice`)
 };
 
 // Truck API

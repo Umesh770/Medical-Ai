@@ -108,8 +108,23 @@ router.post('/', protect, async (req, res) => {
             if (doc) doctorId = doc._id;
         }
 
-        const doctor = await Doctor.findById(doctorId);
-        const fee = doctor ? doctor.consultationFee : 500;
+       if (!doctorId) {
+    return res.status(400).json({
+        success: false,
+        message: 'Doctor ID is required'
+    });
+}
+
+    const doctor = await Doctor.findById(doctorId);
+
+    if (!doctor) {
+        return res.status(404).json({
+            success: false,
+            message: 'Doctor not found'
+        });
+    }
+
+    const fee = Number(doctor.consultationFee || 500);
 
         const appointment = await Appointment.create({
             patientId,
